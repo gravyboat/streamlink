@@ -56,7 +56,7 @@ def stream_weight(stream):
         if stream in weights:
             return weights[stream], group
 
-    match = re.match(r"^(\d+)(k|p)?(\d+)?(\+)?(?:_(\d+)k)?(?:_(alt)(\d)?)?$", stream)
+    match = re.match(r"^(\d+)(k|p)?(\d+)?(\+)?(?:[a_](\d+)k)?(?:_(alt)(\d)?)?$", stream)
 
     if match:
         weight = 0
@@ -311,22 +311,6 @@ class Plugin(object):
         :param sorting_excludes: Specify which streams to exclude from
                                  the best/worst synonyms.
 
-
-        .. versionchanged:: 1.4.2
-           Added *priority* parameter.
-
-        .. versionchanged:: 1.5.0
-           Renamed *priority* to *stream_types* and changed behaviour
-           slightly.
-
-        .. versionchanged:: 1.5.0
-           Added *sorting_excludes* parameter.
-
-        .. versionchanged:: 1.6.0
-           *sorting_excludes* can now be a list of filter expressions
-           or a function that is passed to filter().
-
-
         """
 
         try:
@@ -421,17 +405,17 @@ class Plugin(object):
 
         return final_sorted_streams
 
-    def get_streams(self, *args, **kwargs):
-        """Deprecated since version 1.9.0.
-
-        Has been renamed to :func:`Plugin.streams`, this is an alias
-        for backwards compatibility.
-        """
-
-        return self.streams(*args, **kwargs)
-
     def _get_streams(self):
         raise NotImplementedError
+
+    def get_title(self):
+        return None
+
+    def get_author(self):
+        return None
+
+    def get_category(self):
+        return None
 
     def save_cookies(self, cookie_filter=None, default_expires=60 * 60 * 24 * 7):
         """
@@ -537,7 +521,5 @@ class Plugin(object):
             except NotImplementedError:  # ignore this and raise a FatalPluginError
                 pass
         raise FatalPluginError("This plugin requires user input, however it is not supported on this platform")
-
-
 
 __all__ = ["Plugin"]

@@ -8,11 +8,12 @@ import requests
 from streamlink.compat import urlparse
 from streamlink.exceptions import NoStreamsError, PluginError, StreamError
 from streamlink.plugin import Plugin, PluginArguments, PluginArgument
-from streamlink.plugin.api import http, validate
+from streamlink.plugin.api import validate
 from streamlink.plugin.api.utils import parse_json, parse_query
 from streamlink.stream import (
     HTTPStream, HLSStream, FLVPlaylist, extract_flv_header_tags
 )
+from streamlink.utils.times import hours_minutes_seconds
 
 try:
     from itertools import izip as zip
@@ -46,24 +47,13 @@ _url_re = re.compile(r"""
     )
     (?:
         /
-        (?P<video_type>[bcv])
+        (?P<video_type>[bcv])(?:ideo)?
         /
         (?P<video_id>\d+)
     )?
     (?:
         /
         (?P<clip_name>[\w]+)
-    )?
-""", re.VERBOSE)
-_time_re = re.compile(r"""
-    (?:
-        (?P<hours>\d+)h
-    )?
-    (?:
-        (?P<minutes>\d+)m
-    )?
-    (?:
-        (?P<seconds>\d+)s
     )?
 """, re.VERBOSE)
 
@@ -138,19 +128,10 @@ _quality_options_schema = validate.Schema(
 )
 
 
-def time_to_offset(t):
-    match = _time_re.match(t)
-    if match:
-        offset = int(match.group("hours") or "0") * 60 * 60
-        offset += int(match.group("minutes") or "0") * 60
-        offset += int(match.group("seconds") or "0")
-    else:
-        offset = 0
-
-    return offset
-
-
 class UsherService(object):
+    def __init__(self, session):
+        self.session = session
+
     def _create_url(self, endpoint, **extra_params):
         url = "https://usher.ttvnw.net{0}".format(endpoint)
         params = {
@@ -165,8 +146,8 @@ class UsherService(object):
 
         req = requests.Request("GET", url, params=params)
         # prepare_request is only available in requests 2.0+
-        if hasattr(http, "prepare_request"):
-            req = http.prepare_request(req)
+        if hasattr(self.session.http, "prepare_request"):
+            req = self.session.http.prepare_request(req)
         else:
             req = req.prepare()
 
@@ -181,13 +162,14 @@ class UsherService(object):
 
 
 class TwitchAPI(object):
-    def __init__(self, beta=False, version=3):
+    def __init__(self, session, beta=False, version=3):
         self.oauth_token = None
+        self.session = session
         self.subdomain = beta and "betaapi" or "api"
         self.version = version
 
     def add_cookies(self, cookies):
-        http.parse_cookies(cookies, domain="twitch.tv")
+        self.session.http.parse_cookies(cookies, domain="twitch.tv")
 
     def call(self, path, format="json", schema=None, **extra_params):
         params = dict(as3="t", **extra_params)
@@ -203,10 +185,10 @@ class TwitchAPI(object):
         headers = {'Accept': 'application/vnd.twitchtv.v{0}+json'.format(self.version),
                    'Client-ID': TWITCH_CLIENT_ID}
 
-        res = http.get(url, params=params, headers=headers)
+        res = self.session.http.get(url, params=params, headers=headers)
 
         if format == "json":
-            return http.json(res, schema=schema)
+            return self.session.http.json(res, schema=schema)
         else:
             return res
 
@@ -246,8 +228,8 @@ class TwitchAPI(object):
         return self.call_subdomain("tmi", "/hosts", format="", **params)
 
     def clip_status(self, channel, clip_name, schema):
-        return http.json(self.call_subdomain("clips", "/api/v2/clips/" + clip_name + "/status", format=""),
-                         schema=schema)
+        return self.session.http.json(self.call_subdomain("clips", "/api/v2/clips/" + clip_name + "/status", format=""),
+                                      schema=schema)
 
     # Unsupported/Removed private API calls
 
@@ -337,8 +319,10 @@ class Twitch(Plugin):
             self.video_id = match.get("video_id") or match.get("videos_id")
             self.clip_name = match.get("clip_name")
 
-        self.api = TwitchAPI(beta=self.subdomain == "beta", version=5)
-        self.usher = UsherService()
+        self.api = TwitchAPI(beta=self.subdomain == "beta",
+                             session=self.session,
+                             version=5)
+        self.usher = UsherService(session=self.session)
 
     @property
     def channel(self):
@@ -541,7 +525,12 @@ class Twitch(Plugin):
         # start offset if needed.
         time_offset = self.params.get("t")
         if time_offset:
-            videos["start_offset"] += time_to_offset(self.params.get("t"))
+            try:
+                time_offset = hours_minutes_seconds(time_offset)
+            except ValueError:
+                time_offset = 0
+
+            videos["start_offset"] += time_offset
 
         return self._create_playlist_streams(videos)
 
@@ -582,9 +571,10 @@ class Twitch(Plugin):
             elif hosted_channel:
                 self.logger.info("switching to {0}", hosted_channel)
                 if hosted_channel in self._hosted_chain:
-                    self.logger.error(u"A loop of hosted channels has been detected, "
-                                      "cannot find a playable stream. ({0})".format(
-                        u" -> ".join(self._hosted_chain + [hosted_channel])))
+                    self.logger.error(
+                        u"A loop of hosted channels has been detected, "
+                        "cannot find a playable stream. ({0})".format(
+                            u" -> ".join(self._hosted_chain + [hosted_channel])))
                     return {}
                 self.channel = hosted_channel
                 return self._get_hls_streams(stream_type)
@@ -599,10 +589,18 @@ class Twitch(Plugin):
             self.logger.debug("Unknown HLS stream type: {0}".format(stream_type))
             return {}
 
+        time_offset = self.params.get("t", 0)
+        if time_offset:
+            try:
+                time_offset = hours_minutes_seconds(time_offset)
+            except ValueError:
+                time_offset = 0
+
         try:
             # If the stream is a VOD that is still being recorded the stream should start at the
             # beginning of the recording
             streams = HLSStream.parse_variant_playlist(self.session, url,
+                                                       start_offset=time_offset,
                                                        force_restart=not stream_type == "live")
         except IOError as err:
             err = str(err)

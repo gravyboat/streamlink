@@ -1,9 +1,15 @@
+from __future__ import unicode_literals
+
+import logging
 import re
+from collections import OrderedDict
 
 from streamlink.plugin import Plugin, PluginArguments, PluginArgument
-from streamlink.plugin.api import http, useragents
+from streamlink.plugin.api import useragents
 from streamlink.plugin.api.utils import itertags
 from streamlink.stream import HLSStream
+
+log = logging.getLogger(__name__)
 
 
 class USTVNow(Plugin):
@@ -41,16 +47,16 @@ class USTVNow(Plugin):
         return cls._url_re.match(url) is not None
 
     def login(self, username, password):
-        r = http.get(self._signin_url)
+        r = self.session.http.get(self._signin_url)
         csrf = None
 
         for input in itertags(r.text, "input"):
             if input.attributes['name'] == "csrf_ustvnow":
                 csrf = input.attributes['value']
 
-        self.logger.debug("CSRF: {0}", csrf)
+        log.debug("CSRF: {0}", csrf)
 
-        r = http.post(self._login_url, data={'csrf_ustvnow': csrf,
+        r = self.session.http.post(self._login_url, data={'csrf_ustvnow': csrf,
                                              'signin_email': username,
                                              'signin_password': password,
                                              'signin_remember': '1'})
@@ -65,32 +71,32 @@ class USTVNow(Plugin):
         m = self._url_re.match(self.url)
         scode = m and m.group("scode") or self.get_option("station_code")
 
-        res = http.get(self._guide_url)
+        res = self.session.http.get(self._guide_url, params=dict(token=token))
 
-        channels = {}
+        channels = OrderedDict()
         for t in itertags(res.text, "a"):
             if t.attributes.get('cs'):
-                channels[t.attributes.get('cs').lower()] = t.attributes.get('title').replace("Watch ", "")
+                channels[t.attributes.get('cs').lower()] = t.attributes.get('title').replace("Watch ", "").strip()
 
         if not scode:
-            self.logger.error("Station code not provided, use --ustvnow-station-code.")
-            self.logger.error("Available stations are: {0}", ", ".join(channels.keys()))
+            log.error("Station code not provided, use --ustvnow-station-code.")
+            log.info("Available stations are: \n{0} ".format('\n'.join('    {0} ({1})'.format(c, n) for c, n in channels.items())))
             return
 
         if scode in channels:
-            self.logger.debug("Finding streams for: {0}", channels.get(scode))
+            log.debug("Finding streams for: {0}", channels.get(scode))
 
-            r = http.get(self._stream_url, params={"scode": scode,
+            r = self.session.http.get(self._stream_url, params={"scode": scode,
                                                    "token": token,
                                                    "br_n": "Firefox",
                                                    "br_v": "52",
                                                    "br_d": "desktop"},
                          headers={"User-Agent": useragents.FIREFOX})
 
-            data = http.json(r)
+            data = self.session.http.json(r)
             return HLSStream.parse_variant_playlist(self.session, data["stream"])
         else:
-            self.logger.error("Invalid station-code: {0}", scode)
+            log.error("Invalid station-code: {0}", scode)
 
 
 __plugin__ = USTVNow

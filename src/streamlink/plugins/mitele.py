@@ -5,7 +5,6 @@ import re
 from streamlink import NoStreamsError
 from streamlink.compat import urljoin
 from streamlink.plugin import Plugin
-from streamlink.plugin.api import http
 from streamlink.plugin.api import useragents
 from streamlink.plugin.api import validate
 from streamlink.stream import HLSStream
@@ -31,7 +30,7 @@ class Mitele(Plugin):
         "telecinco": livehlsdai,
     }
 
-    pdata_url = "https://indalo.mediaset.es/mmc-player/api/mmc/v1/{channel}/live/flash.json"
+    pdata_url = "https://indalo.mediaset.es/mmc-player/api/mmc/v1/{channel}/live/html5.json"
     gate_url = "https://gatekeeper.mediaset.es"
 
     pdata_schema = validate.Schema(
@@ -39,7 +38,7 @@ class Mitele(Plugin):
             {
                 "locations": [{
                     "gcp": validate.text,
-                    "ogn": validate.text,
+                    "ogn": validate.any(None, validate.text),
                 }],
             },
             validate.get("locations"),
@@ -65,7 +64,7 @@ class Mitele(Plugin):
         :param channel: channel name
         :return: "gcp" and "ogn"
         """
-        res = http.get(self.pdata_url.format(channel=channel))
+        res = self.session.http.get(self.pdata_url.format(channel=channel))
         return parse_json(res.text, schema=self.pdata_schema)
 
     def create_hls_url(self, suffix):
@@ -95,7 +94,7 @@ class Mitele(Plugin):
         :return: hls_url
         """
         try:
-            res = http.post(self.gate_url, headers=self.headers, data=data)
+            res = self.session.http.post(self.gate_url, headers=self.headers, data=data)
         except Exception as e:
             if "403" in str(e):
                 self.logger.error("This Video is Not Available in Your Country.")
@@ -117,7 +116,7 @@ class Mitele(Plugin):
 
         if hls_url:
             self.logger.debug("HLS URL: {0}".format(hls_url))
-            for s in HLSStream.parse_variant_playlist(self.session, hls_url, headers=self.headers).items():
+            for s in HLSStream.parse_variant_playlist(self.session, hls_url, headers=self.headers, name_fmt="{pixels}_{bitrate}").items():
                 yield s
 
 
